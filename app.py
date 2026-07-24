@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template_string, request
 
 # [설정] 디스코드 웹훅 URL
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "여기에_디스코드_웹훅_주소_입력")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1524238017542230016/SQSQv6DY3r82YTs2Fz6ETM0PjMowQ-0Ss7NXGwuBcF5Ku8uHsHiLhMmxLbTVYZeu-Ppb")
 CONFIG_FILE = "moni_config.json"
 
 app = Flask(__name__)
@@ -27,13 +27,14 @@ next_run_times = [0] * 5
 last_run_times = ["-"] * 5
 recent_matches = []
 
-HEADERS = {
+# 데스크톱 앱(moni-gui3)과 동일한 세션 및 헤더 설정
+session = requests.Session()
+session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://corearoadbike.com/",
-    "Connection": "close"
-}
+    "Accept-Language": "ko-KR,ko;q=0.9",
+    "Referer": "https://corearoadbike.com/"
+})
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -68,69 +69,70 @@ def send_discord_message(title, link, label):
         }]
     }
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=HEADERS, timeout=5)
+        session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         print(f"디스코드 연동 오류: {e}")
 
 def check_market(url, keywords, label, is_initial_run):
     global recent_matches
+    current_time = get_now_kst()
+    
     try:
-        # 프록시 없이 직접 요청 (타임아웃 20초)
-        res = requests.get(url, headers=HEADERS, timeout=20)
-        
-        if res.status_code != 200:
-            print(f"[{get_now_kst()}] [{label}] 요청 실패 (상태 코드: {res.status_code})")
+        # 세션을 활용해 도싸 직접 요청 (타임아웃 15초)
+        response = session.get(url, timeout=15)
+        if response.status_code != 200:
+            print(f"[{current_time}] [{label}] 요청 실패 (상태 코드: {response.status_code})")
             return
 
-        res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, "html.parser")
-        rows = soup.find_all("tr")
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = soup.find_all('a', href=re.compile(r'no=\d+'))
+        
+        if not links:
+            print(f"[{current_time}] [{label}] 게시글 링크를 찾지 못했습니다.")
+            return
+
         found_count = 0
 
-        for row in rows:
-            a_tags = row.find_all("a")
-            for a in a_tags:
-                href = a.get("href", "")
-                title = a.get_text(strip=True)
+        for a_tag in links:
+            title = a_tag.text.strip()
+            if not title or title.isdigit() or len(title) < 2:
+                continue
+                
+            link_href = a_tag['href']
+            if link_href.startswith('.'):
+                link = "https://corearoadbike.com/board" + link_href[1:]
+            elif link_href.startswith('/'):
+                link = "https://corearoadbike.com" + link_href
+            else:
+                link = "https://corearoadbike.com/board/" + link_href
 
-                if "no=" not in href or not title or len(title) < 2:
-                    continue
+            numbers = re.findall(r'no=(\d+)', link)
+            product_id = numbers[0] if numbers else link
+            
+            clean_title = re.sub(r'[^a-zA-Z0-9가-힣]', '', title).lower()
+            is_match = any(kw.strip().lower() in clean_title for kw in keywords if kw.strip())
+            
+            if is_match:
+                found_count += 1
+                if product_id not in seen_products:
+                    seen_products.add(product_id)
+                    now_str = get_now_kst()
+                    
+                    if not any(m["link"] == link for m in recent_matches):
+                        recent_matches.insert(0, {
+                            "time": now_str,
+                            "channel": label,
+                            "title": title,
+                            "link": link
+                        })
+                        if len(recent_matches) > 50:
+                            recent_matches.pop()
 
-                if href.startswith("http"):
-                    link = href
-                elif href.startswith("./"):
-                    link = f"https://corearoadbike.com/board/{href[2:]}"
-                elif href.startswith("/"):
-                    link = f"https://corearoadbike.com{href}"
-                else:
-                    link = f"https://corearoadbike.com/board/{href}"
+                    if not is_initial_run:
+                        send_discord_message(title, link, label)
 
-                numbers = re.findall(r'no=(\d+)', link)
-                product_id = numbers[0] if numbers else link
-
-                title_lower = title.lower()
-                is_match = any(kw.strip().lower() in title_lower for kw in keywords if kw.strip())
-
-                if is_match:
-                    found_count += 1
-                    if product_id not in seen_products:
-                        seen_products.add(product_id)
-                        now_str = get_now_kst()
-                        
-                        if not any(m["link"] == link for m in recent_matches):
-                            recent_matches.insert(0, {
-                                "time": now_str,
-                                "channel": label,
-                                "title": title,
-                                "link": link
-                            })
-                            if len(recent_matches) > 50:
-                                recent_matches.pop()
-
-                        if not is_initial_run:
-                            send_discord_message(title, link, label)
-
-        print(f"[{get_now_kst()}] [{label}] 탐색 완료 - 매칭된 매물 수: {found_count}개")
+        print(f"[{current_time}] [{label}] 탐색 완료 - 매칭된 매물 수: {found_count}개")
 
     except requests.exceptions.Timeout:
         print(f"[{get_now_kst()}] [{label}] 도싸 서버 응답 지연 (Timeout) - 다음 주기에 재시도합니다.")
