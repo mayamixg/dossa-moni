@@ -76,53 +76,64 @@ def send_discord_message(title, link, label):
 def check_market(url, keywords, label, is_initial_run):
     global recent_matches
     try:
-        # 연결 타임아웃 10초, 데이터 수신 타임아웃 15초 지정
         res = requests.get(url, headers=HEADERS, timeout=(10, 15))
         if res.status_code != 200:
             print(f"[{get_now_kst()}] [{label}] 요청 실패 (상태 코드: {res.status_code})")
             return
 
-        # 도싸 한글 인코딩(EUC-KR) 적용
         res.encoding = 'euc-kr'
         soup = BeautifulSoup(res.text, "html.parser")
         
-        links = soup.find_all("a")
+        # 도싸 게시판의 게시글 목록 테이블 행(tr)들을 탐색
+        rows = soup.find_all("tr")
         found_count = 0
 
-        for a in links:
-            href = a.get("href", "")
-            title = a.get_text(strip=True)
+        for row in rows:
+            # 글 제목이 포함된 a 태그 찾기
+            a_tags = row.find_all("a")
+            for a in a_tags:
+                href = a.get("href", "")
+                title = a.get_text(strip=True)
 
-            # 도싸 게시글 링크 식별 (board.php 및 no= 파라미터 포함 조건)
-            if "board.php" not in href or "no=" not in href or not title or len(title) < 2:
-                continue
+                # 도싸 게시글 본문 링크는 보통 no= 파라미터를 포함함
+                if "no=" not in href or not title or len(title) < 2:
+                    continue
 
-            link = href if href.startswith("http") else f"https://corearoadbike.com/board/{href.lstrip('./')}"
-            numbers = re.findall(r'no=(\d+)', link)
-            product_id = numbers[0] if numbers else link
+                # 절대 경로 URL 생성
+                if href.startswith("http"):
+                    link = href
+                elif href.startswith("./"):
+                    link = f"https://corearoadbike.com/board/{href[2:]}"
+                elif href.startswith("/"):
+                    link = f"https://corearoadbike.com{href}"
+                else:
+                    link = f"https://corearoadbike.com/board/{href}"
 
-            title_lower = title.lower()
-            is_match = any(kw.strip().lower() in title_lower for kw in keywords if kw.strip())
+                # 글 번호(no=XXXXX) 추출
+                numbers = re.findall(r'no=(\d+)', link)
+                product_id = numbers[0] if numbers else link
 
-            if is_match:
-                found_count += 1
-                if product_id not in seen_products:
-                    seen_products.add(product_id)
-                    now_str = get_now_kst()
-                    
-                    if not any(m["link"] == link for m in recent_matches):
-                        recent_matches.insert(0, {
-                            "time": now_str,
-                            "channel": label,
-                            "title": title,
-                            "link": link
-                        })
-                        if len(recent_matches) > 50:
-                            recent_matches.pop()
+                title_lower = title.lower()
+                is_match = any(kw.strip().lower() in title_lower for kw in keywords if kw.strip())
 
-                    # 최초 실행(기존 매물) 시 디스코드 알림 제외, 가동 중 새 매물 포착시에만 발송
-                    if not is_initial_run:
-                        send_discord_message(title, link, label)
+                if is_match:
+                    found_count += 1
+                    if product_id not in seen_products:
+                        seen_products.add(product_id)
+                        now_str = get_now_kst()
+                        
+                        if not any(m["link"] == link for m in recent_matches):
+                            recent_matches.insert(0, {
+                                "time": now_str,
+                                "channel": label,
+                                "title": title,
+                                "link": link
+                            })
+                            if len(recent_matches) > 50:
+                                recent_matches.pop()
+
+                        if not is_initial_run:
+                            send_discord_message(title, link, label)
 
         print(f"[{get_now_kst()}] [{label}] 탐색 완료 - 매칭된 매물 수: {found_count}개")
 
