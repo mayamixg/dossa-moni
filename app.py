@@ -10,7 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template_string, request
 
-# [설정] 디스코드 웹훅 URL
+# [설정] 디스코드 웹훅 URL (Render 환경 변수 등록 권장)
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "여기에_디스코드_웹훅_주소_입력")
 CONFIG_FILE = "moni_config.json"
 
@@ -27,8 +27,12 @@ next_run_times = [0] * 5
 last_run_times = ["-"] * 5
 recent_matches = []
 
+# 해외 IP 차단 방지 및 한국 브라우저 위장용 HTTP 헤더
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://corearoadbike.com/",
     "Connection": "close"
 }
 
@@ -40,7 +44,7 @@ def load_config():
         except Exception:
             pass
     return [
-        {"name": "도싸", "url": "https://corearoadbike.com/board/board.php?t_id=Menu31Top6", "kw": "e1, d1, 크랭크, 레드, 크랭크암"},
+        {"name": "도싸 중고장터", "url": "https://corearoadbike.com/board/board.php?t_id=Menu31Top6", "kw": "e1, d1, 크랭크, 레드, 크랭크암"},
         {"name": "도싸 업체장터", "url": "https://corearoadbike.com/board/board.php?t_id=Menu31Top1", "kw": "휠셋, 가민, 보라, 시마노"},
         {"name": "감시 채널 3", "url": "", "kw": ""},
         {"name": "감시 채널 4", "url": "", "kw": ""},
@@ -67,21 +71,21 @@ def send_discord_message(title, link, label):
     try:
         requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=HEADERS, timeout=5)
     except Exception as e:
-        print(f"디스코드 오류: {e}")
+        print(f"디스코드 연동 오류: {e}")
 
 def check_market(url, keywords, label, is_initial_run):
     global recent_matches
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        # 연결 타임아웃 10초, 데이터 수신 타임아웃 15초 지정
+        res = requests.get(url, headers=HEADERS, timeout=(10, 15))
         if res.status_code != 200:
-            print(f"[{label}] 요청 실패 (상태 코드: {res.status_code})")
+            print(f"[{get_now_kst()}] [{label}] 요청 실패 (상태 코드: {res.status_code})")
             return
 
-        # 1. 도싸 한글 인코딩 강제 고정 (EUC-KR)
+        # 도싸 한글 인코딩(EUC-KR) 적용
         res.encoding = 'euc-kr'
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 2. 모든 <a> 태그 탐색
         links = soup.find_all("a")
         found_count = 0
 
@@ -89,11 +93,10 @@ def check_market(url, keywords, label, is_initial_run):
             href = a.get("href", "")
             title = a.get_text(strip=True)
 
-            # 도싸 게시글 링크 특징: board.php가 포함되어 있고 no= 파라미터가 존재
+            # 도싸 게시글 링크 식별 (board.php 및 no= 파라미터 포함 조건)
             if "board.php" not in href or "no=" not in href or not title or len(title) < 2:
                 continue
 
-            # 링크 및 상품 고유 ID 생성
             link = href if href.startswith("http") else f"https://corearoadbike.com/board/{href.lstrip('./')}"
             numbers = re.findall(r'no=(\d+)', link)
             product_id = numbers[0] if numbers else link
@@ -117,13 +120,16 @@ def check_market(url, keywords, label, is_initial_run):
                         if len(recent_matches) > 50:
                             recent_matches.pop()
 
+                    # 최초 실행(기존 매물) 시 디스코드 알림 제외, 가동 중 새 매물 포착시에만 발송
                     if not is_initial_run:
                         send_discord_message(title, link, label)
 
         print(f"[{get_now_kst()}] [{label}] 탐색 완료 - 매칭된 매물 수: {found_count}개")
 
+    except requests.exceptions.Timeout:
+        print(f"[{get_now_kst()}] [{label}] 도싸 서버 응답 지연(Timeout) - 다음 주기에 재시도합니다.")
     except Exception as e:
-        print(f"[{label}] 크롤링 오류 발생: {e}")
+        print(f"[{get_now_kst()}] [{label}] 크롤링 오류 발생: {e}")
 
 def channel_loop(idx):
     global next_run_times, last_run_times
@@ -139,7 +145,7 @@ def channel_loop(idx):
             check_market(ch["url"], keywords, ch["name"] or f"채널 {idx+1}", is_initial_run=first_run)
 
         first_run = False
-        sleep_time = random.randint(180, 270)
+        sleep_time = random.randint(180, 270)  # 3분~4분 30초 랜덤 대기
         next_run_times[idx] = time.time() + sleep_time
 
         for _ in range(sleep_time):
