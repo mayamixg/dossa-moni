@@ -92,7 +92,7 @@ def check_market(url, keywords, label, is_initial_run):
             product_id = numbers[0] if numbers else link
 
             title_lower = title.lower()
-            is_match = any(kw.strip().lower() in title_lower for kwin keywords if kw.strip())
+            is_match = any(kw.strip().lower() in title_lower for kw in keywords if kw.strip())
 
             if product_id not in seen_products:
                 seen_products.add(product_id)
