@@ -74,19 +74,26 @@ def check_market(url, keywords, label, is_initial_run):
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code != 200:
+            print(f"[{label}] 요청 실패 (상태 코드: {res.status_code})")
             return
 
-        res.encoding = res.apparent_encoding or 'utf-8'
+        # 1. 도싸 한글 인코딩 강제 고정 (EUC-KR)
+        res.encoding = 'euc-kr'
         soup = BeautifulSoup(res.text, "html.parser")
+        
+        # 2. 모든 <a> 태그 탐색
         links = soup.find_all("a")
+        found_count = 0
 
         for a in links:
             href = a.get("href", "")
-            title = a.text.strip()
+            title = a.get_text(strip=True)
 
-            if "no=" not in href or not title or len(title) < 2:
+            # 도싸 게시글 링크 특징: board.php가 포함되어 있고 no= 파라미터가 존재
+            if "board.php" not in href or "no=" not in href or not title or len(title) < 2:
                 continue
 
+            # 링크 및 상품 고유 ID 생성
             link = href if href.startswith("http") else f"https://corearoadbike.com/board/{href.lstrip('./')}"
             numbers = re.findall(r'no=(\d+)', link)
             product_id = numbers[0] if numbers else link
@@ -94,11 +101,12 @@ def check_market(url, keywords, label, is_initial_run):
             title_lower = title.lower()
             is_match = any(kw.strip().lower() in title_lower for kw in keywords if kw.strip())
 
-            if product_id not in seen_products:
-                seen_products.add(product_id)
-
-                if is_match:
+            if is_match:
+                found_count += 1
+                if product_id not in seen_products:
+                    seen_products.add(product_id)
                     now_str = get_now_kst()
+                    
                     if not any(m["link"] == link for m in recent_matches):
                         recent_matches.insert(0, {
                             "time": now_str,
@@ -112,8 +120,10 @@ def check_market(url, keywords, label, is_initial_run):
                     if not is_initial_run:
                         send_discord_message(title, link, label)
 
+        print(f"[{get_now_kst()}] [{label}] 탐색 완료 - 매칭된 매물 수: {found_count}개")
+
     except Exception as e:
-        print(f"크롤링 오류: {e}")
+        print(f"[{label}] 크롤링 오류 발생: {e}")
 
 def channel_loop(idx):
     global next_run_times, last_run_times
